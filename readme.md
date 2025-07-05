@@ -335,6 +335,16 @@ try port forwarding
 > kubectl port-forward service/node-service 8080:80
 & now try http://localhost:8080 it worked for me now.
 
+// initialize wsl -d ubuntu-22.04
+// chk if WSL docker is runnning 
+//  minikube start --driver=docker
+// kubectl get nodes
+//cd to app folder in wsl
+// run code . to open folder in vs code
+// eval $(minikube docker-env)
+//  docker build -t node-app-k8s:latest .
+// docker images
+
 
 
 
