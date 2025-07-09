@@ -345,11 +345,209 @@ try port forwarding
 //  docker build -t node-app-k8s:latest .
 // docker images
 
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+Readiness and Liveness Probes
+
+Readiness Probe
+Indicates if the container is ready to accept traffic
+Readiness Probe that checks /healthz to decide if the app is ready
+
+Liveness Probe
+Indicates if the container is healthy (alive)
+A Liveness Probe that checks /healthz periodically to make sure the app hasn’t hung or crashed silently
+
+step 1: Add /healthz endpoint in node.js app (refer code) & then rebuild the docker image
+> eval $(minikube docker-env)
+> docker build -t node-app-k8s:latest .
+> docekr images
+
+step 2: Edit your k8s-deployment.yaml, and add readinessProbe and livenessProbe under the container spec (refer code)
+1) initialDelaySeconds	Delay before first check
+2) periodSeconds	How often to check
+3) failureThreshold	How many failures before action (remove from service / restart container)
+4) httpGet.path	URL path to check
+
+step 3: Apply and Restart
+> kubectl apply -f k8s-deployment.yaml
+> kubectl rollout restart deployment node-app
+
+step 4: verify
+kubectl describe pod <pod-name>
+we will see, Readiness probe succeeded & Liveness probe succeeded or its configuration
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Simulation of Both Probes
+
+step 1 - Update your server.js with healthy flag & /toggle-health endpoint
+& rebuild the docker image
+> eval $(minikube docker-env)
+> docker build -t node-app-k8s:latest .
+Then re-apply your deployment,
+> kubectl apply -f k8s-deployment.yaml
+> kubectl rollout restart deployment node-app
+
+STEP 2 - Access the App and Toggle Health
+ > kubectl port-forward service/node-service 8080:80
+& check /healthz endpoint //healthy 
+then check /toggle-health //unhealthy
+then check /healthz //unhealthy
+
+STEP 3 - now check kubernetes reaction
+> kubectl get pods -w 
+// if readiness probe fails, pod wont recv traffic
+// if liveness probe fails (as per threshold), it will restart the pod 
+
+// in our case, if /healthz endpoint is "unhealthy" , it will stop receving traffic.
+// &, if /healthz endpoint is "unhealthy" for 3 times, it will restart the pod.
+
+When the probe keeps failing:
+
+You’ll see Restart Count increase
+
+You may see a message like Back-off restarting failed container
+
+we can see same in minikube dashboard as well,
+> minikube dashboard
+output will be an url for dashboard
+
+we can also have a curl request specific to a POD
+
+OPTION 1 - Port-Forward to a Specific Pod
+1) > kubectl get pods
+2) > kubectl port-forward pod/<pod_name> 8081:3000 //local port 8080 is connected to port 3000 inside of pod
+3) > new terminal, curl http://localhost:8081/healthz
+
+while verifying, if above option step2 didnot work, as fallback we can use pod/service
+> kubectl port-forward service/node-service 8080:80 //since its service it can redirect to any pod and if this works means some issue with specific pod.
+
+As best practice, when Use kubectl port-forward service/... use web browser
+				  when Use kubectl port-forward pod/... use Curl WSL
+				  
+OPTION 2 - Exec Into a Pod and Curl Locally
+1) > kubectl exec -it <pod_name> -- /bin/sh  //this will open shell inside specific pod
+2) > curl localhost:3000/healthz //this time we are inside of the pod, hence accessing port 3000 is accessible.
+
+kubectl port-forward service/<svc> 
+//you are forwarding traffic to a Kubernetes Service, not to a specific Pod. The Service acts as a load balancer over a set of Pods.
+// Kubernetes uses a round-robin algorithm to distribute requests evenly across them.
+
+When using a Service (ClusterIP or NodePort), traffic is automatically load-balanced across available pods. So direct targeting is only possible using:
+we have seen 1) Port-forward to pod , 2) Exec into pod, & not seen 3)Pod IP (less common in practice; internal use only)
+
+verify Round-robin behaviour with service.
+In node.js app, refer code for os.hostname()
+step 2: rebuild the image
+step 3: restart the deployment
+step 4: kubectl port-forward service/node-service 8080:80
+step 5: curl http://localhost:8080
+running curl miltiple times, should change pod name.
+
+if not working,
+> kubectl get pods
+> kubectl exec -it <pod-name> -- node
+  # require('os').hostname() 
+  # output: should return "<pod_name>"
+
+wasnot working for port 8080, changed port to 8085, nd started working but all requrests were going to same pod.
+
+> curl -H "Connection: close" http://localhost:8085/ //explicitly closing the connection, but it didnot worked for me
+
+To fix it,
+1) check no of pods it should be more than 1 > kubectl get pods -l app=node-app , Or to scale we can use > kubectl scale deployment node-app --replicas=3
+2) confirm if service is balancing the pods, > kubectl get endpoints node-service 
+	NAME           ENDPOINTS                                   		 AGE
+	node-service   172.17.0.3:3000,172.17.0.4:3000,172.17.0.5:3000   10m  		//endpoints should have multiple IPs
+3) Confirm Label Selector in Service > kubectl get pods --show-labels
+4) check for session affinity > kubectl get svc node-service -o yaml  			// sessionAffinity: None, if it is ClientIP, change it to None.
+
+5) > kubectl run tester --image=ubuntu -- sleep infinity
+   > kubectl exec -it tester -- bash
+   > apt update
+   > apt install -y curl wget
+   > curl http://node-service:3000/
+   Your container is listening on PORT, but service targets incorrect port
+   ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 3000
+This means:
+→ Service receives requests on port 80,
+→ Forwards them to pod's containerPort 3000
+
+So your curl or wget command must use port 80, not 3000, when calling via service:
+> curl http://node-service
+
+now verify Round robin load balancing, with multiple requests to  curl http://node-service should see request going to multiple pods.
+
+Update server.js: refer 0.0.0.0 IP in app.listen (refer code)
+
+//Node.js defaults to localhost (127.0.0.1), which means:
+//The app is only accessible from inside the container — not from the service IP.
+//🛠️ Fix: Change to 0.0.0.0 and rebuild + redeploy.
+rebuild image, & restart
+To verify app is listning on 0.0.0.0
+> curl -s http://localhost:3000/
+> kubectl get pod <pod-name> -o wide // refer IP column(i.e. our POD-IP)
+> kubectl exec -it <pod-name> -- sh
+  # curl -s http://<pod-ip>:3000/
 
 
+// > wsl --list --verbose
+// > wsl -d ubuntu-22.04
+// > minikube start --driver=docker
+// change directory to App folder where dockerfile
+// > eval $(minikube docker-env)
+// > docker build -t node-app-k8s:latest .
+// > docker images
+// > kubectl apply -f k8s-deployment.yaml
+// > kubectl rollout restart deployment node-app
+// > kubectl describe pod <podname>
+
+// Port-Forward to a Specific Pod,
+// > kubectl port-forward pod/<pod_name> 8081:3000 //this cmd sends request to a specific pod useful while debugging, to send a request use curl cmd in different terminals > curl http://localhost:8081/healthz
+
+// To Exec into a pod
+> kubectl exec -it <pod_name> -- /bin/sh 
+//then from inside the pod
+# curl http://localhost:8081/healthz
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+Create a LoadBalancer Service in Minikube
+
+step 1 : modify k8s-deployment.YAML
+update spec.type: LoadBalancer (clusterIP earlier)
+apply the changes,
+> kubectl apply -f k8s-deployment.yaml
+
+step 2 : start minikube tunnel 
+open new terminal, > minikube tunnel
+enter password
+
+step 3: check External IP
+> kubectl get svc node-service
+expected output:
+NAME           TYPE           CLUSTER-IP     EXTERNAL-IP     PORT(S)        AGE
+node-service   LoadBalancer   10.96.228.73   127.0.0.1       80:xxxx/TCP    2m
+
+I was getting 
+NAME           TYPE           CLUSTER-IP     EXTERNAL-IP   PORT(S)        AGE
+node-service   LoadBalancer   10.96.153.47   <none>        80:xxxxx/TCP   2m
+// That means the LoadBalancer service is waiting for an external IP, but none has been provisioned yet — which is expected unless minikube tunnel is running
+
+To fix this,
+1) open minikube tunnel
+2) > kubectl get svc node-service
+3) > curl http://127.0.0.1/  //if IP is there use that external IP
+4) > minikube service node-service --url
+	this will return some url, //http://127.0.0.1:34961/
+	Open URL in browser //Hello from Node.js running in Kubernetes! pod : node-app-5f85d487c6-zcfd6
+
+minikube service node-service --url
 
 
-
+step 4: Access The application using external IP
+http://127.0.0.1/
 
 
 
